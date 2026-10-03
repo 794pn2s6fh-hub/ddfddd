@@ -1,0 +1,57 @@
+name: Build Erosion IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Make build scripts executable
+        run: |
+          chmod +x ./build-airlift-ffi.sh
+          chmod +x ./ipabuild.sh
+
+      - name: Verify source layout
+        run: |
+          test -f AirCard-iOS-main/rust-core/src/exploit.rs
+          test -f Erosion.xcodeproj/project.pbxproj
+          test -f Erosion/Experimental/Airlift/AirliftBridge.swift
+          test -f External/AirliftFFI.xcframework/ios-arm64/libairlift_ffi.a
+
+      - name: Rebuild AirliftFFI
+        run: ./build-airlift-ffi.sh
+
+      - name: Build IPA
+        run: ./ipabuild.sh
+
+      - name: Find IPA
+        run: |
+          echo "=== IPA FILES ==="
+          find . -type f -name "*.ipa" -print
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Erosion-IPA
+          path: "**/*.ipa"
+          if-no-files-found: error
+          retention-days: 7
