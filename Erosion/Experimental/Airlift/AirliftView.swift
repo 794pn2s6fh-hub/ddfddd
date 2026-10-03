@@ -1,4 +1,5 @@
 import SwiftUI
+import QuickLook
 import UIKit
 import Combine
 import UniformTypeIdentifiers
