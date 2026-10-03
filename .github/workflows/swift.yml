@@ -1,0 +1,52 @@
+
+name: Build Erosion IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Verify project files
+        run: |
+          ls -la
+          test -f build-airlift-ffi.sh
+          test -f ipabuild.sh
+          test -f AirCard-iOS-main/rust-core/Cargo.toml
+
+      - name: Build Airlift FFI
+        run: |
+          chmod +x build-airlift-ffi.sh
+          ./build-airlift-ffi.sh
+
+      - name: Build Erosion IPA
+        run: |
+          chmod +x ipabuild.sh
+          ./ipabuild.sh
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Erosion-IPA
+          path: "**/*.ipa"
+          if-no-files-found: error
