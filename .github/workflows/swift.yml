@@ -1,0 +1,167 @@
+name: Build Erosion IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Make build scripts executable
+        run: |
+          chmod +x ./build-airlift-ffi.sh
+          chmod +x ./ipabuild.sh
+
+      - name: Verify source layout
+        run: |
+          test -f AirCard-iOS-main/rust-core/src/exploit.rs
+          test -f Erosion.xcodeproj/project.pbxproj
+          test -f Erosion/Experimental/Airlift/AirliftBridge.swift
+          test -f External/AirliftFFI.xcframework/ios-arm64/libairlift_ffi.a
+
+      - name: Rebuild AirliftFFI
+        run: |
+          ./build-airlift-ffi.sh
+          echo "=== AirliftFFI verification ==="
+          ls -lh External/AirliftFFI.xcframework/ios-arm64/libairlift_ffi.a
+          if strings External/AirliftFFI.xcframework/ios-arm64/libairlift_ffi.a | grep -Fq 'restore completed by AirTraffic' && \
+             strings External/AirliftFFI.xcframework/ios-arm64/libairlift_ffi.a | grep -Fq 'SAFE DIRECT AFC SUCCESS' && \
+             strings External/AirliftFFI.xcframework/ios-arm64/libairlift_ffi.a | grep -Fq 'exact restore accepted by AirTraffic asset-consumption signal'; then
+            echo "[OK] AirliftFFI contains v4 non-Media reads and v6 Media reads."
+          else
+            echo "[ERROR] AirliftFFI is missing part of the merged read implementation."
+            exit 1
+          fi
+          if strings External/AirliftFFI.xcframework/ios-arm64/libairlift_ffi.a | grep -Fq 'SAFETY STOP — restore verification failed'; then
+            echo "[ERROR] Old restore-verification implementation is still present in the linked XCFramework."
+            exit 1
+          fi
+
+      - name: Validate merged Media read routing
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path("AirCard-iOS-main/rust-core/src/exploit.rs").read_text()
+          file_dispatch = src[src.index("pub unsafe fn read_file("):src.index("/// Export a device-side directory", src.index("pub unsafe fn read_file("))]
+          folder_dispatch = src[src.index("pub(crate) async fn read_folder("):src.index("/// Write all files in", src.index("pub(crate) async fn read_folder("))]
+          ordinary_file = src[src.index("async fn exploit_read_file("):src.index("fn split_parent_leaf(", src.index("async fn exploit_read_file("))]
+          ordinary_folder = src[src.index("async fn exploit_read_folder("):src.index("// ---------------------------------------------------------------------------\n// Archive builders", src.index("async fn exploit_read_folder("))]
+          assert "media_relative_path(&target_file)" in file_dispatch
+          assert "exploit_read_media_file(" in file_dispatch
+          assert "exploit_read_file(pairing_path, target_file, &logger)" in file_dispatch
+          assert "media_relative_path(&target_dir)" in folder_dispatch
+          assert "exploit_read_media_folder_per_file" in folder_dispatch
+          assert "exploit_read_folder(pairing_path, target_dir, logger).await" in folder_dispatch
+          assert "exploit_write_single_file" in ordinary_file, "non-Media file reader must remain v4"
+          assert "exploit_inject_folder" in ordinary_folder, "non-Media folder reader must remain v4"
+          assert "SAFE DIRECT AFC SUCCESS" in src
+          assert "exact restore accepted by AirTraffic asset-consumption signal" in src
+          print("[OK] Media routes through v6; ordinary /var/ reads retain v4 handlers.")
+          PY
+
+      - name: Validate Application-container read/restore safeguards
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path("AirCard-iOS-main/rust-core/src/exploit.rs").read_text()
+          restore = src[src.index("async fn restore_remote_object_exact("):src.index("async fn restore_books_state(")]
+          app_file = src[src.index("async fn read_airtraffic_file_exact("):src.index("/// AirTraffic-only reader for a selected installed app-data UUID directory")]
+          app_folder = src[src.index("async fn exploit_read_application_container_folder("):src.index("async fn export_recovered_directory(")]
+          cleanup = src[src.index("async fn cleanup_application_read_staging("):src.index("async fn exploit_read_file(")]
+          assert "exact restore settling for 2s before closing ATC" in restore
+          assert "for attempt in 1..=300" in restore
+          assert "consecutive_recovered_missing >= 3" in restore
+          assert "AfcError::ObjectNotFound" in restore, "only AFC ObjectNotFound may count as a consumed recovery asset"
+          assert "AFC destination probes are diagnostic only" in restore
+          assert "AFC cannot independently verify the protected original path" in restore
+          assert 'let target_path = format!("{target_parent}/{leaf}")' in restore
+          assert 'let alias_target_path = format!("{link_destination}/{leaf}")' in restore
+          assert "not treated as absent" in restore
+          assert "read_result = Some(Ok(bytes))" in app_file
+          assert "AFC could not read" in app_file
+          assert "cleanup_application_read_staging(" in app_folder
+          assert "afc.remove(*alias).await" in cleanup
+          assert "cleanup_owned_airtraffic_source" in cleanup
+          assert "remove_all(temporary)" not in app_folder
+          assert 'name == ".com.apple.mobile_container_manager.metadata.plist"' not in app_folder
+          assert "preserving partial local export" in app_folder
+          assert "local export was preserved at" in app_folder
+          staging_validation = src[src.index("async fn stage_remote_object("):src.index("async fn exploit_read_media_file(", src.index("async fn stage_remote_object("))]
+          assert "Read staging failed: Airlock link was not confirmed" in staging_validation
+          assert "let _ = afc.remove_all(source).await" not in staging_validation
+          assert "let _ = afc.remove_all(source).await" not in restore
+          books_snapshot = src[src.index("async fn snapshot_books_state("):src.index("async fn restore_books_state(")]
+          books_state = src[src.index("async fn restore_books_state("):src.index("/// Recursively remove only an owned AirTraffic staging directory")]
+          assert "consecutive_not_found >= 3" in books_snapshot
+          assert "AfcError::ObjectNotFound" in books_snapshot
+          assert "snapshot_books_state(&mut afc)" in app_file
+          assert "snapshot_books_state(&mut afc)" in app_folder
+          checked_books_restore = src[src.index("async fn restore_books_state_checked("):src.index("/// Recursively remove only an owned AirTraffic staging directory")]
+          assert "after 3 attempts" in checked_books_restore
+          assert "read-back mismatch" in checked_books_restore
+          assert "None does not prove the file was absent" in books_state
+          assert 'afc.remove("Books/Sync/Books.plist")' not in books_state
+          print("[OK] Application-container reader relies on valid AirTraffic/AFC postconditions, distinguishes ObjectNotFound from transport errors, preserves partial exports and metadata, and avoids unsafe cleanup/state-file deletion.")
+          PY
+
+      - name: Clean Xcode build state
+        run: |
+          rm -rf build
+          rm -rf "$HOME/Library/Developer/Xcode/DerivedData/Erosion-*"
+          xcodebuild -project Erosion.xcodeproj -scheme Erosion -configuration Release -showBuildSettings >/dev/null
+
+      - name: Build IPA
+        run: ./ipabuild.sh
+
+      - name: Verify IPA contains new Airlift code
+        run: |
+          IPA="$(find . -type f -name '*.ipa' -print -quit)"
+          test -n "$IPA"
+          rm -rf /tmp/erosion-ipa-verify
+          mkdir -p /tmp/erosion-ipa-verify
+          unzip -q "$IPA" -d /tmp/erosion-ipa-verify
+          APP="/tmp/erosion-ipa-verify/Payload/Erosion.app/Erosion"
+          test -f "$APP"
+          if strings "$APP" | grep -Fq 'restore completed by AirTraffic' && \
+             strings "$APP" | grep -Fq 'SAFE DIRECT AFC SUCCESS' && \
+             strings "$APP" | grep -Fq 'exact restore accepted by AirTraffic asset-consumption signal'; then
+            echo "[OK] Final IPA contains v4 non-Media reads and v6 Media reads."
+          else
+            echo "[ERROR] Final IPA is missing part of the merged read implementation."
+            exit 1
+          fi
+          if strings "$APP" | grep -Fq 'SAFETY STOP — restore verification failed'; then
+            echo "[ERROR] Final IPA still contains the old restore-verification failure path."
+            exit 1
+          fi
+
+      - name: Find IPA
+        run: |
+          echo "=== IPA FILES ==="
+          find . -type f -name "*.ipa" -print
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Erosion-IPA
+          path: "**/*.ipa"
+          if-no-files-found: error
+          retention-days: 7
