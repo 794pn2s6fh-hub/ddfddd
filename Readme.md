@@ -1,2 +1,2 @@
 # Erosion Mod
-Erosion mod is unofficial modification to Erosion by jailbreak.party. It utilizes Airlift and worse_query sandbox escapes. Please do not confuse Erosion with Erosion mod.
+Erosion mod is unofficial modification to Erosion by jailbreak.party. It utilizes Airlift and worse_query sandbox escapes. Please do not confuse Erosion with Erosion mod. This project is NOT erozzion and never was. DO NOT spread info that can confuse users. Original Erosion belongs to jailbreak.party (gt link https://github.com/jailbreakdotparty/Erosion) , and THIS Erosion mod belongs to THIS repository.
